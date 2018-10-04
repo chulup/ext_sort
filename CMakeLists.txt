@@ -5,10 +5,10 @@ set(CMAKE_VERBOSE_MAKEFILE ON)
 set(CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_SOURCE_DIR}/cmake/Modules)
 
-find_package(Seastar REQUIRED)
 find_package(Boost REQUIRED
     system
 )
+find_package(Seastar REQUIRED)
 
 set(SOURCES
     src/main.cpp)
@@ -19,7 +19,9 @@ target_link_libraries(ext_sort
     Seastar::Seastar
     Boost::system
 )
-#target_include_directories(ext_sort Seastar::Seastar)
+
+list(REMOVE_ITEM SEASTAR_COMPILE_OPTIONS -O1 -O2 -O3)
+#message("${SEASTAR_COMPILE_OPTIONS}")
 target_compile_options(ext_sort
     PRIVATE
         -Wall
