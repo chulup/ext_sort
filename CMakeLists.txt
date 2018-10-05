@@ -26,6 +26,6 @@ target_compile_options(ext_sort
     PRIVATE
         -Wall
         -Werror
-    PUBLIC
-        ${SEASTAR_COMPILE_OPTIONS}
+        -DDEBUG
+        -g
     )
