@@ -26,6 +26,7 @@ target_compile_options(ext_sort
     PRIVATE
         -Wall
         -Werror
+        -Wno-unused-variable
         -DDEBUG
         -g
     )
