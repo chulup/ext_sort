@@ -11,7 +11,7 @@
 
 using namespace seastar;
 
-const size_t RECORD_SIZE = 16;
+const size_t RECORD_SIZE = 4096;
 const size_t IO_BLOCK_SIZE = 4096;
 
 template<size_t RECORD_SIZE>
@@ -24,23 +24,17 @@ void sort_records(void *data, size_t len) {
     BOOST_ASSERT(sizeof(record_t) == RECORD_SIZE);
     const size_t count = len / sizeof(record_t);
     record_t *records = reinterpret_cast<record_t*>(data);
-//    std::sort(records, records + count-1, [] (const record_t& left, const record_t &right) {
-//        return std::memcmp(left.data, right.data, RECORD_SIZE) < 0;
-//    });
-
-    std::vector<size_t> indexes(count);
-    std::iota(indexes.begin(), indexes.end(), 0);
-    std::sort(indexes.begin(), indexes.end(), [&] (size_t left, size_t right) {
-        return std::memcmp(records[left].data, records[right].data, sizeof(record_t)) < 0;
+    std::sort(records, records + count-1, [] (const record_t& left, const record_t &right) {
+        return std::memcmp(left.data, right.data, RECORD_SIZE) < 0;
     });
-
-    std::vector<record_t> tmp(indexes.size());
-    for (size_t i = 0; i < tmp.size(); i++) {
-        tmp[i] = records[indexes[i]];
-    }
-    std::memcpy(data, tmp.data(), tmp.size() * sizeof(tmp[0]));
 }
 
+std::pair<size_t, uint64_t> calculate_smp_and_block_size(uint64_t /*filesize*/) {
+    const uint64_t MEM_AVAILABLE = 1 << 21; // 10M
+
+    // Sorting with maximum block size
+    return std::make_pair(1, MEM_AVAILABLE);
+}
 
 int main(int argc, char *argv[]) {
     seastar::app_template app;
@@ -66,12 +60,20 @@ int main(int argc, char *argv[]) {
             if (fsize % RECORD_SIZE != 0) {
                 throw std::runtime_error("File size is not a multiple of RECORD_SIZE");
             }
-            const size_t sort_concurrency = seastar::smp::count;
-            const size_t sort_block_size = IO_BLOCK_SIZE; // while RECORD_SIZE is small
 
+            size_t sort_concurrency;
+            uint64_t sort_block_size;
+            std::tie(sort_concurrency, sort_block_size) = calculate_smp_and_block_size(fsize);
+
+            /* QtCreator checker doesn't like this way*/
+//            const auto [sort_concurrency, sort_block_size] = calculate_smp_and_block_size(fsize);
+
+            // Sort blocks
+            // This is done in one thread for blocks to be as large as possible
+            // Change calculate_smp_and_block_size to do it in another way
             parallel_for_each(
                     boost::irange<size_t>(0, sort_concurrency),
-                    [&f, fsize, sort_concurrency] (size_t id) -> future<> {
+                    [&f, fsize, sort_concurrency, sort_block_size] (size_t id) -> future<> {
                 size_t start = sort_block_size * id;
 
                 auto buf = temporary_buffer<uint8_t>::aligned(f.memory_dma_alignment(), sort_block_size);
@@ -79,6 +81,7 @@ int main(int argc, char *argv[]) {
                 // currently for 4 threads it's 0, 4, 8...; 1, 5, 9...; 2, 6, 10...; 3, 7, 11...
                 auto positions = boost::irange<uint64_t>(start, fsize, sort_block_size * sort_concurrency);
 
+                // Sort blocks
                 do_for_each(positions,
                         [&buf, &f] (uint64_t position) mutable -> future<> {
                     return f.dma_read(position, buf.get_write(), buf.size())
@@ -96,9 +99,13 @@ int main(int argc, char *argv[]) {
                             });
                     });
                 }).get();
-
                 return make_ready_future();
             }).get();
+
+//            // Merge blocks
+//            auto buf1 = temporary_buffer<uint8_t>::aligned(f.memory_dma_alignment(), sort_block_size);
+//            auto buf2 = temporary_buffer<uint8_t>::aligned(f.memory_dma_alignment(), sort_block_size);
+
         });
     });
 
