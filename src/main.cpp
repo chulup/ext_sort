@@ -44,6 +44,7 @@ int main(int argc, char *argv[]) {
                 [out_stream, in_stream] () mutable -> future<> {
                     return in_stream->read_exactly(4096).then([out_stream] (auto buf) {
                         out_stream->write(buf.clone()).get();
+//                        out_stream->write(std::move(buf)).get();
                     });
                 }
             ).get();
