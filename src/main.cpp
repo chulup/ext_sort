@@ -14,17 +14,28 @@ using namespace seastar;
 const size_t RECORD_SIZE = 16;
 const size_t IO_BLOCK_SIZE = 4096;
 
-#pragma pack(push, 1)
+//#pragma pack(push, 1)
 struct record_t {
-    uint8_t data[RECORD_SIZE];
+    char data[RECORD_SIZE];
 };
-#pragma pack(pop)
-
+//#pragma pack(pop)
 bool operator<(const record_t &left, const record_t &right) {
     return std::memcmp(left.data, right.data, sizeof(record_t::data)) < 0;
 }
 
-std::pair<size_t, uint64_t> calculate_smp_and_block_size(uint64_t /*filesize*/) {
+typedef temporary_buffer<char> tmp_buf;
+
+typedef struct {
+    input_stream<char> stream;
+    tmp_buf current_record = {};
+} stream_with_record;
+
+bool operator< (const stream_with_record &left, const stream_with_record &right) {
+    const record_t *left_r = reinterpret_cast<const record_t*>(left.current_record.get());
+    const record_t *right_r = reinterpret_cast<const record_t*>(right.current_record.get());
+
+    return *left_r < *right_r;
+};
 
 uint64_t get_available_memory(uint64_t /*filesize*/) {
     const uint64_t MEM_AVAILABLE = 1 << 18; // 10M
@@ -85,9 +96,55 @@ int main(int argc, char *argv[]) {
                 });
             }
 
+            const auto buffer_size = mem_available / (positions.size() + 2 /* twice the size for output buffer */);
+            auto out_stream = make_lw_shared(make_file_output_stream(in_file, buffer_size * 2));
+
+
+            // Create output streams
+            auto sorted_streams = make_lw_shared(std::vector<stream_with_record>{});
+            std::for_each(positions.begin(), positions.end(),
+                    [&, sorted_streams] (auto pos) {
+                sorted_streams->push_back(stream_with_record {
+                    make_file_input_stream(out_file, pos, buffer_size, file_input_stream_options{buffer_size})
+                });
             });
 
+            // Fill buffers with initial records
+            parallel_for_each(boost::irange<size_t>(0, sorted_streams->size()),
+                    [sorted_streams] (size_t index) -> future<> {
+                return sorted_streams->at(index).stream.read_exactly(RECORD_SIZE).then(
+                        [index, sorted_streams] (tmp_buf buffer) {
+                    sorted_streams->at(index).current_record = std::move(buffer);
+                    return make_ready_future();
+                });
+            }).get();
 
+            print("string %d", sorted_streams->at(0).current_record.size());
+
+            do_until(
+                [sorted_streams] () -> bool {
+                    return sorted_streams->empty();
+                },
+                [sorted_streams, out_stream] () mutable -> future<> {
+                    auto min_stream = std::min_element(sorted_streams->begin(), sorted_streams->end());
+                    auto min_record = std::move(min_stream->current_record);
+
+                    return when_all_succeed(
+                        out_stream->write(std::move(min_record)),
+                        min_stream->stream.read_exactly(RECORD_SIZE)
+                            .then([sorted_streams, min_stream] (tmp_buf buffer) mutable {
+                                if (min_stream->stream.eof()) {
+                                    sorted_streams->erase(min_stream);
+                                    return make_ready_future();
+                                }
+                                min_stream->current_record = std::move(buffer);
+                                return make_ready_future();
+                            })
+                    ); // We need to wait for possible sorted_streams change before proceeding
+                }
+            ).then([out_stream] () {
+                return out_stream->flush();
+            }).get();
         });
     });
 
