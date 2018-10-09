@@ -63,13 +63,13 @@ int main(int argc, char *argv[]) {
         const auto &filename = opts["filename"].as<sstring>();
 
         return async([&filename] () {
-            file in_file = open_file_dma(filename, open_flags::rw).get0();
+            file in_file = open_file_dma(filename, open_flags::ro).get0();
             uint64_t fsize = in_file.size().get0();
             if (fsize % RECORD_SIZE != 0) {
                 throw std::runtime_error("File size is not a multiple of RECORD_SIZE");
             }
             const sstring out_name = sprint("%s.sort_tmp", filename);
-            file out_file = open_file_dma(out_name, open_flags::rw | open_flags::create).get0();
+            file out_file = open_file_dma(out_name, open_flags::rw | open_flags::create | open_flags::truncate).get0();
 
             uint64_t mem_available = get_available_memory(fsize);
             const auto positions = boost::irange<uint64_t>(0, fsize, mem_available);
@@ -93,9 +93,11 @@ int main(int argc, char *argv[]) {
                     const auto written_bytes = out_file.dma_write(pos, buf.get(), read_bytes).get0();
                     // read_bytes != written_bytes ???
                     return make_ready_future();
-                });
+                }).get();
             }
+            in_file.close();
 
+            in_file = open_file_dma(filename, open_flags::rw).get0();
             const auto buffer_size = mem_available / (positions.size() + 2 /* twice the size for output buffer */);
             auto out_stream = make_lw_shared(make_file_output_stream(in_file, buffer_size * 2));
 
@@ -120,15 +122,18 @@ int main(int argc, char *argv[]) {
             }).get();
 
             print("string %d", sorted_streams->at(0).current_record.size());
+            uint64_t writes = 0;
+            uint64_t bytes = 0;
 
             do_until(
                 [sorted_streams] () -> bool {
                     return sorted_streams->empty();
                 },
-                [sorted_streams, out_stream] () mutable -> future<> {
+                [sorted_streams, out_stream, &writes, &bytes] () mutable -> future<> {
                     auto min_stream = std::min_element(sorted_streams->begin(), sorted_streams->end());
-                    auto min_record = std::move(min_stream->current_record);
-
+                    auto min_record = min_stream->current_record.clone();
+                    writes++;
+                    bytes += min_record.size();
                     return when_all_succeed(
                         out_stream->write(std::move(min_record)),
                         min_stream->stream.read_exactly(RECORD_SIZE)
@@ -142,9 +147,9 @@ int main(int argc, char *argv[]) {
                             })
                     ); // We need to wait for possible sorted_streams change before proceeding
                 }
-            ).then([out_stream] () {
-                return out_stream->flush();
-            }).get();
+            ).get();
+            out_stream->flush().get();
+            in_file.close();
         });
     });
 
