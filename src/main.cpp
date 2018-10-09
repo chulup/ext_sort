@@ -11,30 +11,28 @@
 
 using namespace seastar;
 
-const size_t RECORD_SIZE = 4096;
+const size_t RECORD_SIZE = 16;
 const size_t IO_BLOCK_SIZE = 4096;
 
-template<size_t RECORD_SIZE>
-void sort_records(void *data, size_t len) {
-    struct record_t {
-        uint8_t data[RECORD_SIZE];
-    };
+#pragma pack(push, 1)
+struct record_t {
+    uint8_t data[RECORD_SIZE];
+};
+#pragma pack(pop)
 
-    BOOST_ASSERT(len % sizeof(record_t) == 0);
-    BOOST_ASSERT(sizeof(record_t) == RECORD_SIZE);
-    const size_t count = len / sizeof(record_t);
-    record_t *records = reinterpret_cast<record_t*>(data);
-    std::sort(records, records + count-1, [] (const record_t& left, const record_t &right) {
-        return std::memcmp(left.data, right.data, RECORD_SIZE) < 0;
-    });
+bool operator<(const record_t &left, const record_t &right) {
+    return std::memcmp(left.data, right.data, sizeof(record_t::data)) < 0;
 }
 
 std::pair<size_t, uint64_t> calculate_smp_and_block_size(uint64_t /*filesize*/) {
-    const uint64_t MEM_AVAILABLE = 1 << 21; // 10M
+
+uint64_t get_available_memory(uint64_t /*filesize*/) {
+    const uint64_t MEM_AVAILABLE = 1 << 18; // 10M
 
     // Sorting with maximum block size
-    return std::make_pair(1, MEM_AVAILABLE);
+    return MEM_AVAILABLE;
 }
+
 
 int main(int argc, char *argv[]) {
     seastar::app_template app;
@@ -54,57 +52,41 @@ int main(int argc, char *argv[]) {
         const auto &filename = opts["filename"].as<sstring>();
 
         return async([&filename] () {
-
-            file f = open_file_dma(filename, open_flags::rw).get0();
-            uint64_t fsize = f.size().get0();
+            file in_file = open_file_dma(filename, open_flags::rw).get0();
+            uint64_t fsize = in_file.size().get0();
             if (fsize % RECORD_SIZE != 0) {
                 throw std::runtime_error("File size is not a multiple of RECORD_SIZE");
             }
+            const sstring out_name = sprint("%s.sort_tmp", filename);
+            file out_file = open_file_dma(out_name, open_flags::rw | open_flags::create).get0();
 
-            size_t sort_concurrency;
-            uint64_t sort_block_size;
-            std::tie(sort_concurrency, sort_block_size) = calculate_smp_and_block_size(fsize);
+            uint64_t mem_available = get_available_memory(fsize);
+            const auto positions = boost::irange<uint64_t>(0, fsize, mem_available);
+            {
+                auto buf = tmp_buf::aligned(in_file.memory_dma_alignment(), mem_available);
 
-            /* QtCreator checker doesn't like this way*/
-//            const auto [sort_concurrency, sort_block_size] = calculate_smp_and_block_size(fsize);
-
-            // Sort blocks
-            // This is done in one thread for blocks to be as large as possible
-            // Change calculate_smp_and_block_size to do it in another way
-            parallel_for_each(
-                    boost::irange<size_t>(0, sort_concurrency),
-                    [&f, fsize, sort_concurrency, sort_block_size] (size_t id) -> future<> {
-                size_t start = sort_block_size * id;
-
-                auto buf = temporary_buffer<uint8_t>::aligned(f.memory_dma_alignment(), sort_block_size);
-                // Calculate positions current execution thread will sort;
-                // currently for 4 threads it's 0, 4, 8...; 1, 5, 9...; 2, 6, 10...; 3, 7, 11...
-                auto positions = boost::irange<uint64_t>(start, fsize, sort_block_size * sort_concurrency);
-
-                // Sort blocks
                 do_for_each(positions,
-                        [&buf, &f] (uint64_t position) mutable -> future<> {
-                    return f.dma_read(position, buf.get_write(), buf.size())
-                            .then([&buf, position, &f] (size_t read_bytes) mutable -> future<>
-                    {
-                        // read_bytes could be less than buf.size() when in the end of file;
-                        sort_records<RECORD_SIZE>(buf.get_write(), read_bytes);
+                        [&] (const auto pos) -> future<> {
+                    const auto read_bytes = in_file.dma_read(pos, buf.get_write(), buf.size()).get0();
+                    if (read_bytes % RECORD_SIZE != 0) {
+                        // Something went wrong
+                        // We know file size is a multiple of RECORD_SIZE and every write we do have to be multiple of that too
+                        throw std::runtime_error("dma_read() read unexpected byte count");
+                    }
 
-                        return f.dma_write(position, buf.get(), read_bytes)
-                            .then([read_bytes] (auto write_bytes) {
-                                if (read_bytes != write_bytes) {
-                                    return make_exception_future(std::runtime_error("Failed to write all the data"));
-                                }
-                                return make_ready_future();
-                            });
-                    });
-                }).get();
-                return make_ready_future();
-            }).get();
+                    const size_t count = read_bytes / sizeof(record_t);
+                    record_t *records = reinterpret_cast<record_t*>(buf.get_write());
+                    std::sort(records, records + count);
 
-//            // Merge blocks
-//            auto buf1 = temporary_buffer<uint8_t>::aligned(f.memory_dma_alignment(), sort_block_size);
-//            auto buf2 = temporary_buffer<uint8_t>::aligned(f.memory_dma_alignment(), sort_block_size);
+                    // Write sorted block to the same place in temporary file
+                    const auto written_bytes = out_file.dma_write(pos, buf.get(), read_bytes).get0();
+                    // read_bytes != written_bytes ???
+                    return make_ready_future();
+                });
+            }
+
+            });
+
 
         });
     });
