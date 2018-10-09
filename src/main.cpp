@@ -131,11 +131,11 @@ int main(int argc, char *argv[]) {
                 },
                 [sorted_streams, out_stream, &writes, &bytes] () mutable -> future<> {
                     auto min_stream = std::min_element(sorted_streams->begin(), sorted_streams->end());
-                    auto min_record = min_stream->current_record.clone();
+                    auto min_record = min_stream->current_record.share();
                     writes++;
                     bytes += min_record.size();
                     return when_all_succeed(
-                        out_stream->write(std::move(min_record)),
+                        out_stream->write(min_record.get(), min_record.size()),
                         min_stream->stream.read_exactly(RECORD_SIZE)
                             .then([sorted_streams, min_stream] (tmp_buf buffer) mutable {
                                 if (min_stream->stream.eof()) {
@@ -145,7 +145,7 @@ int main(int argc, char *argv[]) {
                                 min_stream->current_record = std::move(buffer);
                                 return make_ready_future();
                             })
-                    ); // We need to wait for possible sorted_streams change before proceeding
+                    ).then([min_record = std::move(min_record)] {}); // We need to wait for possible sorted_streams change before proceeding
                 }
             ).get();
             out_stream->flush().get();
