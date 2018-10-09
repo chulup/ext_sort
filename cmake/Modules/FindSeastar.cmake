@@ -39,6 +39,8 @@ find_package_handle_standard_args(Seastar DEFAULT_MSG
 mark_as_advanced(SEASTAR_COMPILE_OPTIONS SEASTAR_INCLUDE_DIRS SEASTAR_LIBRARIES)
 
 if(SEASTAR_FOUND AND NOT TARGET Seastar::Seastar)
+        list(REMOVE_ITEM SEASTAR_COMPILE_OPTIONS -O1 -O2 -O3)
+        list(REMOVE_ITEM SEASTAR_COMPILE_OPTIONS -Wno-maybe-uninitialized -Wno-stringop-overflow) # prepare for Clang
         add_library(Seastar::Seastar INTERFACE IMPORTED)
         set_target_properties(Seastar::Seastar PROPERTIES
                 INTERFACE_COMPILE_OPTIONS "${SEASTAR_COMPILE_OPTIONS}"

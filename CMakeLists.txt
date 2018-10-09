@@ -20,12 +20,13 @@ target_link_libraries(ext_sort
     Boost::system
 )
 
-list(REMOVE_ITEM SEASTAR_COMPILE_OPTIONS -O1 -O2 -O3)
-#message("${SEASTAR_COMPILE_OPTIONS}")
+
+
 target_compile_options(ext_sort
     PRIVATE
         -Wall
         -Werror
-    PUBLIC
-        ${SEASTAR_COMPILE_OPTIONS}
+        -Wno-unused-variable
+        -DDEBUG
+        -g
     )
