@@ -11,7 +11,7 @@
 
 using namespace seastar;
 
-const size_t RECORD_SIZE = 16;
+const size_t RECORD_SIZE = 4096;
 const size_t IO_BLOCK_SIZE = 4096;
 
 //#pragma pack(push, 1)
@@ -100,7 +100,10 @@ int main(int argc, char *argv[]) {
             in_file.close();
 
             in_file = open_file_dma(filename, open_flags::rw).get0();
-            const auto buffer_size = block_size / (positions.size() + 2 /* twice the size for output buffer */);
+            auto buffer_size = block_size / (positions.size() + 2 /* twice the size for output buffer */);
+
+             // make sure buffer size is a multiple of write_alignment
+            buffer_size = (buffer_size / in_file.disk_write_dma_alignment()) * in_file.disk_write_dma_alignment();
             auto out_stream = make_lw_shared(make_file_output_stream(in_file, buffer_size * 2));
 
 
