@@ -28,6 +28,8 @@ typedef temporary_buffer<char> tmp_buf;
 typedef struct {
     input_stream<char> stream;
     tmp_buf current_record = {};
+    uint64_t read_bytes = 0;
+    uint64_t reads = 0;
 } stream_with_record;
 
 bool operator< (const stream_with_record &left, const stream_with_record &right) {
@@ -71,10 +73,10 @@ int main(int argc, char *argv[]) {
             const sstring out_name = sprint("%s.sort_tmp", filename);
             file out_file = open_file_dma(out_name, open_flags::rw | open_flags::create | open_flags::truncate).get0();
 
-            uint64_t mem_available = get_available_memory(fsize);
-            const auto positions = boost::irange<uint64_t>(0, fsize, mem_available);
+            const uint64_t block_size = get_available_memory(fsize);
+            const auto positions = boost::irange<uint64_t>(0, fsize, block_size);
             {
-                auto buf = tmp_buf::aligned(in_file.memory_dma_alignment(), mem_available);
+                auto buf = tmp_buf::aligned(in_file.memory_dma_alignment(), block_size);
 
                 do_for_each(positions,
                         [&] (const auto pos) -> future<> {
@@ -98,7 +100,7 @@ int main(int argc, char *argv[]) {
             in_file.close();
 
             in_file = open_file_dma(filename, open_flags::rw).get0();
-            const auto buffer_size = mem_available / (positions.size() + 2 /* twice the size for output buffer */);
+            const auto buffer_size = block_size / (positions.size() + 2 /* twice the size for output buffer */);
             auto out_stream = make_lw_shared(make_file_output_stream(in_file, buffer_size * 2));
 
 
@@ -107,7 +109,7 @@ int main(int argc, char *argv[]) {
             std::for_each(positions.begin(), positions.end(),
                     [&, sorted_streams] (auto pos) {
                 sorted_streams->push_back(stream_with_record {
-                    make_file_input_stream(out_file, pos, buffer_size, file_input_stream_options{buffer_size})
+                    make_file_input_stream(out_file, pos, block_size, file_input_stream_options{buffer_size})
                 });
             });
 
@@ -116,24 +118,26 @@ int main(int argc, char *argv[]) {
                     [sorted_streams] (size_t index) -> future<> {
                 return sorted_streams->at(index).stream.read_exactly(RECORD_SIZE).then(
                         [index, sorted_streams] (tmp_buf buffer) {
-                    sorted_streams->at(index).current_record = std::move(buffer);
+                    auto &s = sorted_streams->at(index);
+                    s.read_bytes = buffer.size();
+                    s.reads ++;
+                    s.current_record = std::move(buffer);
                     return make_ready_future();
                 });
             }).get();
 
-            print("string %d", sorted_streams->at(0).current_record.size());
             uint64_t writes = 0;
-            uint64_t bytes = 0;
+            uint64_t written_bytes = 0;
 
             do_until(
                 [sorted_streams] () -> bool {
                     return sorted_streams->empty();
                 },
-                [sorted_streams, out_stream, &writes, &bytes] () mutable -> future<> {
+                [sorted_streams, out_stream, &writes, &written_bytes] () mutable -> future<> {
                     auto min_stream = std::min_element(sorted_streams->begin(), sorted_streams->end());
                     auto min_record = min_stream->current_record.share();
                     writes++;
-                    bytes += min_record.size();
+                    written_bytes += min_record.size();
                     return when_all_succeed(
                         out_stream->write(min_record.get(), min_record.size()),
                         min_stream->stream.read_exactly(RECORD_SIZE)
@@ -142,6 +146,8 @@ int main(int argc, char *argv[]) {
                                     sorted_streams->erase(min_stream);
                                     return make_ready_future();
                                 }
+                                min_stream->read_bytes += buffer.size();
+                                min_stream->reads++;
                                 min_stream->current_record = std::move(buffer);
                                 return make_ready_future();
                             })
