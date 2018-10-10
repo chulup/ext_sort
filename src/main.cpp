@@ -40,7 +40,7 @@ bool operator< (const stream_with_record &left, const stream_with_record &right)
 };
 
 uint64_t get_available_memory(uint64_t /*filesize*/) {
-    const uint64_t MEM_AVAILABLE = 1 << 18; // 10M
+    const uint64_t MEM_AVAILABLE = 1 << 30; // 1M
 
     // Sorting with maximum block size
     return MEM_AVAILABLE;
