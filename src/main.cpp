@@ -13,6 +13,7 @@ using namespace seastar;
 
 const size_t RECORD_SIZE = 4096;
 
+// Helper structure which data could be casted to; allows us to use ::operator<() on raw blocks of known size
 struct record_t {
     char data[RECORD_SIZE];
 };
@@ -30,6 +31,7 @@ uint64_t get_available_memory(uint64_t /*filesize*/) {
     return MEM_AVAILABLE;
 }
 
+/// Sort block of in_file data, write on the same position to out_file
 future<> sort_block(file in_file, file out_file, uint64_t position, uint64_t size) {
     auto buffer = tmp_buf::aligned(in_file.disk_read_dma_alignment(), size);
     return in_file.dma_read(position, buffer.get_write(), size).then(
@@ -40,6 +42,7 @@ future<> sort_block(file in_file, file out_file, uint64_t position, uint64_t siz
             throw std::runtime_error("dma_read() read unexpected byte count");
         }
 
+        // Use std::sort to sort data in memory
         const size_t count = buffer.size() / sizeof(record_t);
         record_t *records = reinterpret_cast<record_t*>(buffer.get_write());
         std::sort(records, records + count);
@@ -65,6 +68,8 @@ bool operator< (const stream_with_record &left, const stream_with_record &right)
     return *left_r < *right_r;
 };
 
+// Merge sorted blocks of data from known positions in in_file, using up to `mem_available` memory for buffers
+// Write sorted data to `out_file`
 future<> merge_blocks(file in_file, file out_file, std::vector<uint64_t> positions, uint64_t block_size, size_t mem_available) {
     auto buffer_size = mem_available / (positions.size() + 2 /* twice the size for output buffer */);
      // make sure buffer size is a multiple of write_alignment
