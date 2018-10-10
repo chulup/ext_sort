@@ -171,14 +171,14 @@ int main(int argc, char *argv[]) {
                 return merge_blocks(tmp_file, orig_file, std::move(positions_vec), block_size, block_size);
             }).get();
 
-            when_all_succeed(
-                tmp_file.flush(),
-                orig_file.flush()
-            ).get();
-            when_all_succeed(
-                tmp_file.close(),
-                orig_file.close()
-            ).get();
+//            when_all_succeed(
+//                tmp_file.flush(),
+//                orig_file.flush()
+//            ).get();
+//            when_all_succeed(
+//                tmp_file.close(),
+//                orig_file.close()
+//            ).get();
         });
     });
 
