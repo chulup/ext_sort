@@ -95,7 +95,12 @@ future<> merge_blocks(file in_file, file out_file, std::vector<uint64_t> positio
             return make_ready_future();
         });
     }).then([sorted_streams, out_file, buffer_size] {
-        auto out_stream = make_lw_shared(make_file_output_stream(out_file, buffer_size * 2));
+        // give writing stream twice the memory of reading streams for less write operations
+        // allow it to write its buffers in background
+        file_output_stream_options out_options;
+        out_options.buffer_size = buffer_size * 2;
+        out_options.write_behind = 2;
+        auto out_stream = make_lw_shared(make_file_output_stream(out_file, out_options));
 
         return do_until(
             [sorted_streams] () -> bool {
