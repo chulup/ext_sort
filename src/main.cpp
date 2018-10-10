@@ -24,8 +24,8 @@ bool operator<(const record_t &left, const record_t &right) {
 
 typedef temporary_buffer<char> tmp_buf;
 
-uint64_t get_available_memory(uint64_t /*filesize*/) {
-    const uint64_t MEM_AVAILABLE = 1 << 30; // 1M
+uint64_t get_available_memory() {
+    const uint64_t MEM_AVAILABLE = 1 << 30;
 
     // Sorting with maximum block size
     return MEM_AVAILABLE;
@@ -157,7 +157,7 @@ int main(int argc, char *argv[]) {
             const sstring out_name = sprint("%s.sort_tmp", filename);
             file tmp_file = open_file_dma(out_name, open_flags::rw | open_flags::create | open_flags::truncate).get0();
 
-            const uint64_t block_size = get_available_memory(fsize);
+            const uint64_t block_size = get_available_memory();
             const auto positions = boost::irange<uint64_t>(0, fsize, block_size);
 
             do_for_each(positions,
