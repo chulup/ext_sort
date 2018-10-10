@@ -80,21 +80,25 @@ int main(int argc, char *argv[]) {
 
                 do_for_each(positions,
                         [&] (const auto pos) -> future<> {
-                    const auto read_bytes = in_file.dma_read(pos, buf.get_write(), buf.size()).get0();
-                    if (read_bytes % RECORD_SIZE != 0) {
-                        // Something went wrong
-                        // We know file size is a multiple of RECORD_SIZE and every write we do have to be multiple of that too
-                        throw std::runtime_error("dma_read() read unexpected byte count");
-                    }
+                    return in_file.dma_read(pos, buf.get_write(), buf.size()).then(
+                            [pos, &out_file, &buf] (const auto read_bytes) {
+                        if (read_bytes % RECORD_SIZE != 0) {
+                            // Something went wrong
+                            // We know file size is a multiple of RECORD_SIZE and every write we do have to be multiple of that too
+                            throw std::runtime_error("dma_read() read unexpected byte count");
+                        }
 
-                    const size_t count = read_bytes / sizeof(record_t);
-                    record_t *records = reinterpret_cast<record_t*>(buf.get_write());
-                    std::sort(records, records + count);
+                        const size_t count = read_bytes / sizeof(record_t);
+                        record_t *records = reinterpret_cast<record_t*>(buf.get_write());
+                        std::sort(records, records + count);
 
-                    // Write sorted block to the same place in temporary file
-                    const auto written_bytes = out_file.dma_write(pos, buf.get(), read_bytes).get0();
-                    // read_bytes != written_bytes ???
-                    return make_ready_future();
+                        // Write sorted block to the same place in temporary file
+                        return out_file.dma_write(pos, buf.get(), read_bytes).then(
+                                [] (const auto /*written_bytes*/) {
+                            // read_bytes != written_bytes ???
+                            return make_ready_future();
+                        });
+                    });
                 }).get();
             }
             in_file.close();
