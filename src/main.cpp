@@ -46,6 +46,29 @@ uint64_t get_available_memory(uint64_t /*filesize*/) {
     return MEM_AVAILABLE;
 }
 
+future<> sort_block(file in_file, file out_file, uint64_t position, uint64_t size) {
+    auto buffer = temporary_buffer<char>::aligned(in_file.disk_read_dma_alignment(), size);
+    return in_file.dma_read(position, buffer.get_write(), size).then(
+            [position, out_file, buffer = buffer.share()] (const uint64_t read_bytes) mutable {
+        if (read_bytes % RECORD_SIZE != 0) {
+            // Something went wrong
+            // We know file size is a multiple of RECORD_SIZE and every write we do have to be multiple of that too
+            throw std::runtime_error("dma_read() read unexpected byte count");
+        }
+
+        const size_t count = buffer.size() / sizeof(record_t);
+        record_t *records = reinterpret_cast<record_t*>(buffer.get_write());
+        std::sort(records, records + count);
+
+        // Write sorted block to the same place in temporary file
+        return out_file.dma_write(position, buffer.get(), read_bytes).then(
+                [out_file, buffer = buffer.share()] (const auto /*written_bytes*/) {
+            // read_bytes != written_bytes ???
+            return make_ready_future();
+        });
+    });
+}
+
 
 int main(int argc, char *argv[]) {
     seastar::app_template app;
@@ -75,32 +98,12 @@ int main(int argc, char *argv[]) {
 
             const uint64_t block_size = get_available_memory(fsize);
             const auto positions = boost::irange<uint64_t>(0, fsize, block_size);
-            {
-                auto buf = tmp_buf::aligned(in_file.memory_dma_alignment(), block_size);
 
-                do_for_each(positions,
-                        [&] (const auto pos) -> future<> {
-                    return in_file.dma_read(pos, buf.get_write(), buf.size()).then(
-                            [pos, &out_file, &buf] (const auto read_bytes) {
-                        if (read_bytes % RECORD_SIZE != 0) {
-                            // Something went wrong
-                            // We know file size is a multiple of RECORD_SIZE and every write we do have to be multiple of that too
-                            throw std::runtime_error("dma_read() read unexpected byte count");
-                        }
+            do_for_each(positions,
+                    [&] (const auto pos) -> future<> {
+                return sort_block(in_file, out_file, pos, block_size);
+            }).get();
 
-                        const size_t count = read_bytes / sizeof(record_t);
-                        record_t *records = reinterpret_cast<record_t*>(buf.get_write());
-                        std::sort(records, records + count);
-
-                        // Write sorted block to the same place in temporary file
-                        return out_file.dma_write(pos, buf.get(), read_bytes).then(
-                                [] (const auto /*written_bytes*/) {
-                            // read_bytes != written_bytes ???
-                            return make_ready_future();
-                        });
-                    });
-                }).get();
-            }
             in_file.close();
 
             in_file = open_file_dma(filename, open_flags::rw).get0();

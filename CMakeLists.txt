@@ -11,7 +11,9 @@ find_package(Boost REQUIRED
 find_package(Seastar REQUIRED)
 
 set(SOURCES
-    src/main.cpp)
+    src/main.cpp
+    src/helpers.h
+)
 add_executable(ext_sort ${SOURCES})
 
 set_property(TARGET ext_sort PROPERTY CXX_STANDARD 17)
