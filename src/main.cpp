@@ -12,32 +12,16 @@
 using namespace seastar;
 
 const size_t RECORD_SIZE = 4096;
-const size_t IO_BLOCK_SIZE = 4096;
 
-//#pragma pack(push, 1)
 struct record_t {
     char data[RECORD_SIZE];
 };
-//#pragma pack(pop)
+
 bool operator<(const record_t &left, const record_t &right) {
     return std::memcmp(left.data, right.data, sizeof(record_t::data)) < 0;
 }
 
 typedef temporary_buffer<char> tmp_buf;
-
-typedef struct {
-    input_stream<char> stream;
-    tmp_buf current_record = {};
-    uint64_t read_bytes = 0;
-    uint64_t reads = 0;
-} stream_with_record;
-
-bool operator< (const stream_with_record &left, const stream_with_record &right) {
-    const record_t *left_r = reinterpret_cast<const record_t*>(left.current_record.get());
-    const record_t *right_r = reinterpret_cast<const record_t*>(right.current_record.get());
-
-    return *left_r < *right_r;
-};
 
 uint64_t get_available_memory(uint64_t /*filesize*/) {
     const uint64_t MEM_AVAILABLE = 1 << 30; // 1M
@@ -47,7 +31,7 @@ uint64_t get_available_memory(uint64_t /*filesize*/) {
 }
 
 future<> sort_block(file in_file, file out_file, uint64_t position, uint64_t size) {
-    auto buffer = temporary_buffer<char>::aligned(in_file.disk_read_dma_alignment(), size);
+    auto buffer = tmp_buf::aligned(in_file.disk_read_dma_alignment(), size);
     return in_file.dma_read(position, buffer.get_write(), size).then(
             [position, out_file, buffer = buffer.share()] (const uint64_t read_bytes) mutable {
         if (read_bytes % RECORD_SIZE != 0) {
@@ -65,6 +49,73 @@ future<> sort_block(file in_file, file out_file, uint64_t position, uint64_t siz
                 [out_file, buffer = buffer.share()] (const auto /*written_bytes*/) {
             // read_bytes != written_bytes ???
             return make_ready_future();
+        });
+    });
+}
+
+typedef struct {
+    input_stream<char> stream;
+    tmp_buf current_record = {};
+} stream_with_record;
+
+bool operator< (const stream_with_record &left, const stream_with_record &right) {
+    const record_t *left_r = reinterpret_cast<const record_t*>(left.current_record.get());
+    const record_t *right_r = reinterpret_cast<const record_t*>(right.current_record.get());
+
+    return *left_r < *right_r;
+};
+
+future<> merge_blocks(file in_file, file out_file, std::vector<uint64_t> positions, uint64_t block_size, size_t mem_available) {
+    auto buffer_size = mem_available / (positions.size() + 2 /* twice the size for output buffer */);
+     // make sure buffer size is a multiple of write_alignment
+    buffer_size = (buffer_size / out_file.disk_write_dma_alignment()) * out_file.disk_write_dma_alignment();
+
+
+    // Create output streams
+    auto sorted_streams = make_lw_shared(std::vector<stream_with_record>{});
+    std::for_each(positions.begin(), positions.end(),
+            [&, sorted_streams] (auto pos) {
+        sorted_streams->push_back(stream_with_record {
+            make_file_input_stream(in_file, pos, block_size, file_input_stream_options{buffer_size})
+        });
+    });
+
+    // Fill buffers with initial records
+    return parallel_for_each(boost::irange<size_t>(0, sorted_streams->size()),
+            [sorted_streams] (size_t index) -> future<> {
+        return sorted_streams->at(index).stream.read_exactly(RECORD_SIZE).then(
+                [index, sorted_streams] (tmp_buf buffer) {
+            auto &s = sorted_streams->at(index);
+            s.current_record = std::move(buffer);
+            return make_ready_future();
+        });
+    }).then([sorted_streams, out_file, buffer_size] {
+        auto out_stream = make_lw_shared(make_file_output_stream(out_file, buffer_size * 2));
+
+        return do_until(
+            [sorted_streams] () -> bool {
+                return sorted_streams->empty();
+            },
+            [sorted_streams, out_stream] () mutable -> future<> {
+                auto min_stream = std::min_element(sorted_streams->begin(), sorted_streams->end());
+                auto min_record = min_stream->current_record.share();
+
+                // Simultaneously send min_record to be written and read new at the same stream
+                return when_all_succeed(
+                    out_stream->write(min_record.get(), min_record.size()),
+                    min_stream->stream.read_exactly(RECORD_SIZE)
+                        .then([sorted_streams, min_stream] (tmp_buf buffer) mutable {
+                            if (min_stream->stream.eof()) {
+                                sorted_streams->erase(min_stream);
+                                return make_ready_future();
+                            }
+                            min_stream->current_record = std::move(buffer);
+                            return make_ready_future();
+                        })
+                ).then([min_record = std::move(min_record)] {}); // We need to wait for possible sorted_streams change before proceeding
+            }
+        ).then([out_stream] {
+            out_stream->flush();
         });
     });
 }
@@ -100,69 +151,18 @@ int main(int argc, char *argv[]) {
             const auto positions = boost::irange<uint64_t>(0, fsize, block_size);
 
             do_for_each(positions,
-                    [&] (const auto pos) -> future<> {
+                    [=] (const auto pos) -> future<> {
                 return sort_block(orig_file, tmp_file, pos, block_size);
+            }).then([=] {
+                std::vector<uint64_t> positions_vec;
+                std::for_each(positions.begin(), positions.end(), [&positions_vec] (uint64_t pos) {
+                    positions_vec.push_back(pos);
+                });
+                return merge_blocks(tmp_file, orig_file, std::move(positions_vec), block_size, block_size);
             }).get();
 
-            auto buffer_size = block_size / (positions.size() + 2 /* twice the size for output buffer */);
-
-             // make sure buffer size is a multiple of write_alignment
-            buffer_size = (buffer_size / orig_file.disk_write_dma_alignment()) * orig_file.disk_write_dma_alignment();
-            auto out_stream = make_lw_shared(make_file_output_stream(orig_file, buffer_size * 2));
-
-
-            // Create output streams
-            auto sorted_streams = make_lw_shared(std::vector<stream_with_record>{});
-            std::for_each(positions.begin(), positions.end(),
-                    [&, sorted_streams] (auto pos) {
-                sorted_streams->push_back(stream_with_record {
-                    make_file_input_stream(tmp_file, pos, block_size, file_input_stream_options{buffer_size})
-                });
-            });
-
-            // Fill buffers with initial records
-            parallel_for_each(boost::irange<size_t>(0, sorted_streams->size()),
-                    [sorted_streams] (size_t index) -> future<> {
-                return sorted_streams->at(index).stream.read_exactly(RECORD_SIZE).then(
-                        [index, sorted_streams] (tmp_buf buffer) {
-                    auto &s = sorted_streams->at(index);
-                    s.read_bytes = buffer.size();
-                    s.reads ++;
-                    s.current_record = std::move(buffer);
-                    return make_ready_future();
-                });
-            }).get();
-
-            uint64_t writes = 0;
-            uint64_t written_bytes = 0;
-
-            do_until(
-                [sorted_streams] () -> bool {
-                    return sorted_streams->empty();
-                },
-                [sorted_streams, out_stream, &writes, &written_bytes] () mutable -> future<> {
-                    auto min_stream = std::min_element(sorted_streams->begin(), sorted_streams->end());
-                    auto min_record = min_stream->current_record.share();
-                    writes++;
-                    written_bytes += min_record.size();
-                    return when_all_succeed(
-                        out_stream->write(min_record.get(), min_record.size()),
-                        min_stream->stream.read_exactly(RECORD_SIZE)
-                            .then([sorted_streams, min_stream] (tmp_buf buffer) mutable {
-                                if (min_stream->stream.eof()) {
-                                    sorted_streams->erase(min_stream);
-                                    return make_ready_future();
-                                }
-                                min_stream->read_bytes += buffer.size();
-                                min_stream->reads++;
-                                min_stream->current_record = std::move(buffer);
-                                return make_ready_future();
-                            })
-                    ).then([min_record = std::move(min_record)] {}); // We need to wait for possible sorted_streams change before proceeding
-                }
-            ).get();
-            out_stream->flush().get();
             orig_file.close();
+            tmp_file.close();
         });
     });
 
