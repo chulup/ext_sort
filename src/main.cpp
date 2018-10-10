@@ -88,30 +88,27 @@ int main(int argc, char *argv[]) {
         const auto &filename = opts["filename"].as<sstring>();
 
         return async([&filename] () {
-            file in_file = open_file_dma(filename, open_flags::ro).get0();
-            uint64_t fsize = in_file.size().get0();
+            file orig_file = open_file_dma(filename, open_flags::rw).get0();
+            uint64_t fsize = orig_file.size().get0();
             if (fsize % RECORD_SIZE != 0) {
                 throw std::runtime_error("File size is not a multiple of RECORD_SIZE");
             }
             const sstring out_name = sprint("%s.sort_tmp", filename);
-            file out_file = open_file_dma(out_name, open_flags::rw | open_flags::create | open_flags::truncate).get0();
+            file tmp_file = open_file_dma(out_name, open_flags::rw | open_flags::create | open_flags::truncate).get0();
 
             const uint64_t block_size = get_available_memory(fsize);
             const auto positions = boost::irange<uint64_t>(0, fsize, block_size);
 
             do_for_each(positions,
                     [&] (const auto pos) -> future<> {
-                return sort_block(in_file, out_file, pos, block_size);
+                return sort_block(orig_file, tmp_file, pos, block_size);
             }).get();
 
-            in_file.close();
-
-            in_file = open_file_dma(filename, open_flags::rw).get0();
             auto buffer_size = block_size / (positions.size() + 2 /* twice the size for output buffer */);
 
              // make sure buffer size is a multiple of write_alignment
-            buffer_size = (buffer_size / in_file.disk_write_dma_alignment()) * in_file.disk_write_dma_alignment();
-            auto out_stream = make_lw_shared(make_file_output_stream(in_file, buffer_size * 2));
+            buffer_size = (buffer_size / orig_file.disk_write_dma_alignment()) * orig_file.disk_write_dma_alignment();
+            auto out_stream = make_lw_shared(make_file_output_stream(orig_file, buffer_size * 2));
 
 
             // Create output streams
@@ -119,7 +116,7 @@ int main(int argc, char *argv[]) {
             std::for_each(positions.begin(), positions.end(),
                     [&, sorted_streams] (auto pos) {
                 sorted_streams->push_back(stream_with_record {
-                    make_file_input_stream(out_file, pos, block_size, file_input_stream_options{buffer_size})
+                    make_file_input_stream(tmp_file, pos, block_size, file_input_stream_options{buffer_size})
                 });
             });
 
@@ -165,7 +162,7 @@ int main(int argc, char *argv[]) {
                 }
             ).get();
             out_stream->flush().get();
-            in_file.close();
+            orig_file.close();
         });
     });
 
