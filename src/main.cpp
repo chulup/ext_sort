@@ -39,7 +39,7 @@ future<> sort_block(file in_file, file out_file, uint64_t position, uint64_t siz
         if (read_bytes % RECORD_SIZE != 0) {
             // Something went wrong
             // We know file size is a multiple of RECORD_SIZE and every write we do have to be multiple of that too
-            throw std::runtime_error("dma_read() read unexpected byte count");
+            return make_exception_future(std::runtime_error("dma_read() read unexpected byte count"));
         }
 
         // Use std::sort to sort data in memory
