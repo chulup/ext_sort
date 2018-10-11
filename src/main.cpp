@@ -175,22 +175,24 @@ int main(int argc, char *argv[]) {
                         std::move(orig_file),
                         std::move(tmp_file),
                         std::move(positions),
-                        [=] (auto &orig_file, auto &tmp_file, auto &positions) -> future<>
+                        [block_size] (auto &orig_file, auto &tmp_file, auto &positions) -> future<>
                 {
+                    // Sort each block and write it to the temporary file
                     return do_for_each(positions,
                             [&orig_file, &tmp_file, block_size] (const auto pos) -> future<> {
                         return sort_block(orig_file, tmp_file, pos, block_size);
+
+                    // Merge all blocks from temporary file, writing them back to original file
                     }).then([&orig_file, &tmp_file, &positions, block_size] {
                         std::vector<uint64_t> positions_vec;
                         std::for_each(positions.begin(), positions.end(), [&positions_vec] (uint64_t pos) {
                             positions_vec.push_back(pos);
                         });
                         return merge_blocks(tmp_file, orig_file, std::move(positions_vec), block_size, block_size);
-                    }).then([&orig_file, &tmp_file] {
-                        return when_all_succeed(
-                            orig_file.flush(),
-                            tmp_file.flush()
-                        );
+
+                    // flush files at the end
+                    }).finally([&orig_file] {
+                        return orig_file.flush();
                     });
                 });
             }).get();
