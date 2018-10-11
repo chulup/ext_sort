@@ -63,6 +63,31 @@ bool operator< (const stream_with_record &left, const stream_with_record &right)
     return *left_r < *right_r;
 };
 
+future<> write_minimum_record(std::vector<stream_with_record> &streams, output_stream<char> &out_stream) {
+    // Find stream with minimal record using
+    auto min_stream = std::min_element(streams.begin(), streams.end());
+    auto min_record = min_stream->current_record.share();
+
+    // Simultaneously send min_record to be written and read new at the same stream
+    return do_with(
+            std::move(min_stream),
+            std::move(min_record),
+            [&streams, &out_stream] (auto &min_stream, auto &min_record) mutable -> future<> {
+        return when_all_succeed(
+            min_stream->stream.read_exactly(RECORD_SIZE).then(
+                    [&streams, &min_stream] (tmp_buf buffer) mutable -> future<> {
+                if (min_stream->stream.eof()) {
+                    streams.erase(min_stream);
+                    return make_ready_future();
+                }
+                min_stream->current_record = std::move(buffer);
+                return make_ready_future();
+            }),
+            out_stream.write(min_record.get(), min_record.size())
+        );
+    });
+}
+
 // Merge sorted blocks of data from known positions in in_file, using up to `mem_available` memory for buffers
 // Write sorted data to `out_file`
 future<> merge_blocks(file &in_file, file &out_file, std::vector<uint64_t> positions, uint64_t block_size, size_t mem_available) {
@@ -105,28 +130,7 @@ future<> merge_blocks(file &in_file, file &out_file, std::vector<uint64_t> posit
                     return sorted_streams.empty();
                 },
                 [&sorted_streams, &out_stream] () mutable -> future<> {
-                    // Find stream with minimal record using
-                    auto min_stream = std::min_element(sorted_streams.begin(), sorted_streams.end());
-                    auto min_record = min_stream->current_record.share();
-
-                    // Simultaneously send min_record to be written and read new at the same stream
-                    return do_with(
-                            std::move(min_stream),
-                            std::move(min_record),
-                            [&sorted_streams, &out_stream] (auto &min_stream, auto &min_record) mutable {
-                        return when_all_succeed(
-                            out_stream.write(min_record.get(), min_record.size()),
-                            min_stream->stream.read_exactly(RECORD_SIZE)
-                                .then([&sorted_streams, &min_stream] (tmp_buf buffer) mutable  -> future<> {
-                                    if (min_stream->stream.eof()) {
-                                        sorted_streams.erase(min_stream);
-                                        return make_ready_future();
-                                    }
-                                    min_stream->current_record = std::move(buffer);
-                                    return make_ready_future();
-                                })
-                        );
-                    });
+                    return write_minimum_record(sorted_streams, out_stream);
                 }
             ).then([&out_stream] {
                 out_stream.flush();
@@ -176,7 +180,6 @@ int main(int argc, char *argv[]) {
                     return do_for_each(positions,
                             [&orig_file, &tmp_file, block_size] (const auto pos) -> future<> {
                         return sort_block(orig_file, tmp_file, pos, block_size);
-    //                    return make_ready_future();
                     }).then([&orig_file, &tmp_file, &positions, block_size] {
                         std::vector<uint64_t> positions_vec;
                         std::for_each(positions.begin(), positions.end(), [&positions_vec] (uint64_t pos) {
