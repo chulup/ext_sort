@@ -38,7 +38,7 @@ future<> sort_block(file &in_file, file &out_file, uint64_t position, uint64_t s
         }
 
         // Use std::sort to sort data in memory
-        const size_t count = buffer.size() / sizeof(record_t);
+        const size_t count = read_bytes / sizeof(record_t);
         record_t *records = reinterpret_cast<record_t*>(buffer.get_write());
         std::sort(records, records + count);
 
