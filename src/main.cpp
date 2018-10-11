@@ -32,10 +32,10 @@ uint64_t get_available_memory() {
 }
 
 /// Sort block of in_file data, write on the same position to out_file
-future<> sort_block(file in_file, file out_file, uint64_t position, uint64_t size) {
+future<> sort_block(file &in_file, file &out_file, uint64_t position, uint64_t size) {
     auto buffer = tmp_buf::aligned(in_file.disk_read_dma_alignment(), size);
     return in_file.dma_read(position, buffer.get_write(), size).then(
-            [position, out_file, buffer = buffer.share()] (const uint64_t read_bytes) mutable {
+            [position, &out_file, buffer = buffer.share()] (const uint64_t read_bytes) mutable {
         if (read_bytes % RECORD_SIZE != 0) {
             // Something went wrong
             // We know file size is a multiple of RECORD_SIZE and every write we do have to be multiple of that too
@@ -49,7 +49,7 @@ future<> sort_block(file in_file, file out_file, uint64_t position, uint64_t siz
 
         // Write sorted block to the same place in temporary file
         return out_file.dma_write(position, buffer.get(), read_bytes).then(
-                [out_file, buffer = buffer.share()] (const auto /*written_bytes*/) {
+                [buffer = buffer.share()] (const auto /*written_bytes*/) {
             // read_bytes != written_bytes ???
             return make_ready_future();
         });
@@ -70,7 +70,7 @@ bool operator< (const stream_with_record &left, const stream_with_record &right)
 
 // Merge sorted blocks of data from known positions in in_file, using up to `mem_available` memory for buffers
 // Write sorted data to `out_file`
-future<> merge_blocks(file in_file, file out_file, std::vector<uint64_t> positions, uint64_t block_size, size_t mem_available) {
+future<> merge_blocks(file &in_file, file&out_file, std::vector<uint64_t> positions, uint64_t block_size, size_t mem_available) {
     auto buffer_size = mem_available / (positions.size() + 2 /* twice the size for output buffer */);
      // make sure buffer size is a multiple of write_alignment
     buffer_size = (buffer_size / out_file.disk_write_dma_alignment()) * out_file.disk_write_dma_alignment();
@@ -94,7 +94,7 @@ future<> merge_blocks(file in_file, file out_file, std::vector<uint64_t> positio
             s.current_record = std::move(buffer);
             return make_ready_future();
         });
-    }).then([sorted_streams, out_file, buffer_size] {
+    }).then([sorted_streams, buffer_size, &out_file] {
         // give writing stream twice the memory of reading streams for less write operations
         // allow it to write its buffers in background
         file_output_stream_options out_options;
@@ -148,37 +148,44 @@ int main(int argc, char *argv[]) {
         auto &opts = app.configuration();
         const auto &filename = opts["filename"].as<sstring>();
 
-        return async([&filename] () {
-            file orig_file = open_file_dma(filename, open_flags::rw).get0();
-            uint64_t fsize = orig_file.size().get0();
+        return async([filename] () {
+            uint64_t fsize = file_size(filename).get0();
+
             if (fsize % RECORD_SIZE != 0) {
                 throw std::runtime_error("File size is not a multiple of RECORD_SIZE");
             }
-            const sstring out_name = sprint("%s.sort_tmp", filename);
-            file tmp_file = open_file_dma(out_name, open_flags::rw | open_flags::create | open_flags::truncate).get0();
-
             const uint64_t block_size = get_available_memory();
-            const auto positions = boost::irange<uint64_t>(0, fsize, block_size);
+            const sstring out_name = sprint("%s.sort_tmp", filename);
 
-            do_for_each(positions,
-                    [=] (const auto pos) -> future<> {
-                return sort_block(orig_file, tmp_file, pos, block_size);
-            }).then([=] {
-                std::vector<uint64_t> positions_vec;
-                std::for_each(positions.begin(), positions.end(), [&positions_vec] (uint64_t pos) {
-                    positions_vec.push_back(pos);
+            when_all_succeed(
+                open_file_dma(filename, open_flags::rw),
+                open_file_dma(out_name, open_flags::rw | open_flags::create | open_flags::truncate)
+            ).then([fsize, block_size] (auto orig_file, auto tmp_file) {
+                const auto positions = boost::irange<uint64_t>(0, fsize, block_size);
+                return do_with(
+                        std::move(orig_file),
+                        std::move(tmp_file),
+                        std::move(positions),
+                        [=] (auto &orig_file, auto &tmp_file, auto &positions) -> future<>
+                {
+                    return do_for_each(positions,
+                            [&orig_file, &tmp_file, block_size] (const auto pos) -> future<> {
+                        return sort_block(orig_file, tmp_file, pos, block_size);
+    //                    return make_ready_future();
+                    }).then([&orig_file, &tmp_file, &positions, block_size] {
+                        std::vector<uint64_t> positions_vec;
+                        std::for_each(positions.begin(), positions.end(), [&positions_vec] (uint64_t pos) {
+                            positions_vec.push_back(pos);
+                        });
+                        return merge_blocks(tmp_file, orig_file, std::move(positions_vec), block_size, block_size);
+                    }).then([&orig_file, &tmp_file] {
+                        return when_all_succeed(
+                            orig_file.flush(),
+                            tmp_file.flush()
+                        );
+                    });
                 });
-                return merge_blocks(tmp_file, orig_file, std::move(positions_vec), block_size, block_size);
             }).get();
-
-//            when_all_succeed(
-//                tmp_file.flush(),
-//                orig_file.flush()
-//            ).get();
-//            when_all_succeed(
-//                tmp_file.close(),
-//                orig_file.close()
-//            ).get();
         });
     });
 
