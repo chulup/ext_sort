@@ -65,62 +65,67 @@ bool operator< (const stream_with_record &left, const stream_with_record &right)
 
 // Merge sorted blocks of data from known positions in in_file, using up to `mem_available` memory for buffers
 // Write sorted data to `out_file`
-future<> merge_blocks(file &in_file, file&out_file, std::vector<uint64_t> positions, uint64_t block_size, size_t mem_available) {
+future<> merge_blocks(file &in_file, file &out_file, std::vector<uint64_t> positions, uint64_t block_size, size_t mem_available) {
     auto buffer_size = mem_available / (positions.size() + 2 /* twice the size for output buffer */);
      // make sure buffer size is a multiple of write_alignment
     buffer_size = (buffer_size / out_file.disk_write_dma_alignment()) * out_file.disk_write_dma_alignment();
 
 
     // Create output streams
-    auto sorted_streams = make_lw_shared(std::vector<stream_with_record>{});
+    std::vector<stream_with_record> sorted_streams;
     std::for_each(positions.begin(), positions.end(),
-            [&, sorted_streams] (auto pos) {
-        sorted_streams->push_back(stream_with_record {
+            [&sorted_streams, &in_file, block_size, buffer_size] (auto pos) mutable {
+        sorted_streams.push_back(stream_with_record {
             make_file_input_stream(in_file, pos, block_size, file_input_stream_options{buffer_size})
         });
     });
+    // give writing stream twice the memory of reading streams for less write operations
+    // allow it to write its buffers in background
+    file_output_stream_options out_options;
+    out_options.buffer_size = unsigned(buffer_size * 2);
+    out_options.write_behind = 2;
 
     // Fill buffers with initial records
-    return parallel_for_each(boost::irange<size_t>(0, sorted_streams->size()),
-            [sorted_streams] (size_t index) -> future<> {
-        return sorted_streams->at(index).stream.read_exactly(RECORD_SIZE).then(
-                [index, sorted_streams] (tmp_buf buffer) {
-            auto &s = sorted_streams->at(index);
-            s.current_record = std::move(buffer);
-            return make_ready_future();
-        });
-    }).then([sorted_streams, buffer_size, &out_file] {
-        // give writing stream twice the memory of reading streams for less write operations
-        // allow it to write its buffers in background
-        file_output_stream_options out_options;
-        out_options.buffer_size = buffer_size * 2;
-        out_options.write_behind = 2;
-        auto out_stream = make_lw_shared(make_file_output_stream(out_file, out_options));
+    return do_with(
+            std::move(sorted_streams),
+            make_file_output_stream(out_file, out_options),
+            [] (auto &sorted_streams, auto &out_stream) -> future<>
+    {
+        return parallel_for_each(boost::irange<size_t>(0, sorted_streams.size()),
+                [&sorted_streams] (size_t index) -> future<> {
+            return sorted_streams.at(index).stream.read_exactly(RECORD_SIZE).then(
+                    [index, &sorted_streams] (tmp_buf buffer) mutable {
+                auto &s = sorted_streams.at(index);
+                s.current_record = std::move(buffer);
+                return make_ready_future();
+            });
+        }).then([&sorted_streams, &out_stream] () mutable -> future<> {
+            return do_until(
+                [&sorted_streams] () -> bool {
+                    return sorted_streams.empty();
+                },
+                [&sorted_streams, &out_stream] () mutable -> future<> {
+                    // Find stream with minimal record using
+                    auto min_stream = std::min_element(sorted_streams.begin(), sorted_streams.end());
+                    auto min_record = min_stream->current_record.share();
 
-        return do_until(
-            [sorted_streams] () -> bool {
-                return sorted_streams->empty();
-            },
-            [sorted_streams, out_stream] () mutable -> future<> {
-                auto min_stream = std::min_element(sorted_streams->begin(), sorted_streams->end());
-                auto min_record = min_stream->current_record.share();
-
-                // Simultaneously send min_record to be written and read new at the same stream
-                return when_all_succeed(
-                    out_stream->write(min_record.get(), min_record.size()),
-                    min_stream->stream.read_exactly(RECORD_SIZE)
-                        .then([sorted_streams, min_stream] (tmp_buf buffer) mutable {
-                            if (min_stream->stream.eof()) {
-                                sorted_streams->erase(min_stream);
+                    // Simultaneously send min_record to be written and read new at the same stream
+                    return when_all_succeed(
+                        out_stream.write(min_record.get(), min_record.size()),
+                        min_stream->stream.read_exactly(RECORD_SIZE)
+                            .then([&sorted_streams, min_stream] (tmp_buf buffer) mutable  -> future<> {
+                                if (min_stream->stream.eof()) {
+                                    sorted_streams.erase(min_stream);
+                                    return make_ready_future();
+                                }
+                                min_stream->current_record = std::move(buffer);
                                 return make_ready_future();
-                            }
-                            min_stream->current_record = std::move(buffer);
-                            return make_ready_future();
-                        })
-                ).then([min_record = std::move(min_record)] {}); // We need to wait for possible sorted_streams change before proceeding
-            }
-        ).then([out_stream] {
-            out_stream->flush();
+                            })
+                    ).then([min_record = std::move(min_record)] {}); // We need to wait for possible sorted_streams change before proceeding
+                }
+            ).then([&out_stream] {
+                out_stream.flush();
+            });
         });
     });
 }
