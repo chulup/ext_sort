@@ -110,18 +110,23 @@ future<> merge_blocks(file &in_file, file &out_file, std::vector<uint64_t> posit
                     auto min_record = min_stream->current_record.share();
 
                     // Simultaneously send min_record to be written and read new at the same stream
-                    return when_all_succeed(
-                        out_stream.write(min_record.get(), min_record.size()),
-                        min_stream->stream.read_exactly(RECORD_SIZE)
-                            .then([&sorted_streams, min_stream] (tmp_buf buffer) mutable  -> future<> {
-                                if (min_stream->stream.eof()) {
-                                    sorted_streams.erase(min_stream);
+                    return do_with(
+                            std::move(min_stream),
+                            std::move(min_record),
+                            [&sorted_streams, &out_stream] (auto &min_stream, auto &min_record) mutable {
+                        return when_all_succeed(
+                            out_stream.write(min_record.get(), min_record.size()),
+                            min_stream->stream.read_exactly(RECORD_SIZE)
+                                .then([&sorted_streams, &min_stream] (tmp_buf buffer) mutable  -> future<> {
+                                    if (min_stream->stream.eof()) {
+                                        sorted_streams.erase(min_stream);
+                                        return make_ready_future();
+                                    }
+                                    min_stream->current_record = std::move(buffer);
                                     return make_ready_future();
-                                }
-                                min_stream->current_record = std::move(buffer);
-                                return make_ready_future();
-                            })
-                    ).then([min_record = std::move(min_record)] {}); // We need to wait for possible sorted_streams change before proceeding
+                                })
+                        );
+                    });
                 }
             ).then([&out_stream] {
                 out_stream.flush();
