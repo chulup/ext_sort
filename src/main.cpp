@@ -1,6 +1,8 @@
 #include <iostream>
 #include <numeric>
 
+#include "helpers.h"
+
 #include <core/app-template.hh>
 #include <core/reactor.hh>
 #include <core/thread.hh>
@@ -23,13 +25,6 @@ bool operator<(const record_t &left, const record_t &right) {
 }
 
 typedef temporary_buffer<char> tmp_buf;
-
-uint64_t get_available_memory() {
-    const uint64_t MEM_AVAILABLE = 1 << 30;
-
-    // Sorting with maximum block size
-    return MEM_AVAILABLE;
-}
 
 /// Sort block of in_file data, write on the same position to out_file
 future<> sort_block(file &in_file, file &out_file, uint64_t position, uint64_t size) {

@@ -12,6 +12,8 @@ find_package(Seastar REQUIRED)
 
 set(SOURCES
     src/main.cpp
+    src/helpers.h
+    src/helpers.cpp
 )
 add_executable(ext_sort ${SOURCES})
 
