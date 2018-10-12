@@ -159,23 +159,35 @@ int main(int argc, char *argv[]) {
 
         return async([filename] () {
             uint64_t fsize = file_size(filename).get0();
+            const auto stats = seastar::memory::stats();
 
             if (fsize % RECORD_SIZE != 0) {
                 throw std::runtime_error("File size is not a multiple of RECORD_SIZE");
             }
             const uint64_t block_size = get_available_memory();
             const sstring out_name = sprint("%s.sort_tmp", filename);
+            const std::vector<uint64_t> positions = [fsize, block_size] () {
+                std::vector<uint64_t> temp;
+                for (uint64_t pos = 0; pos < fsize; pos += block_size) {
+                    temp.push_back(pos);
+                }
+                return temp;
+            }();
+
+            print("Sorting file \"%s\" of size %s with %s memory available\n", filename, pp_number(fsize), pp_number(block_size));
+            print("Data will be temporary saved to file \"%s\" in sorted blocks of size %s\n", out_name, pp_number(block_size));
+            print("Merging step will proceed with %d input streams with buffer size of %s\n",
+                positions.size(),
+                pp_number(block_size/(positions.size() + 2)));
 
             when_all_succeed(
                 open_file_dma(filename, open_flags::rw),
                 open_file_dma(out_name, open_flags::rw | open_flags::create | open_flags::truncate)
-            ).then([fsize, block_size] (auto orig_file, auto tmp_file) {
-                const auto positions = boost::irange<uint64_t>(0, fsize, block_size);
+            ).then([block_size, &positions] (auto orig_file, auto tmp_file) {
                 return do_with(
                         std::move(orig_file),
                         std::move(tmp_file),
-                        std::move(positions),
-                        [block_size] (auto &orig_file, auto &tmp_file, auto &positions) -> future<>
+                        [block_size, &positions] (auto &orig_file, auto &tmp_file) -> future<>
                 {
                     // Sort each block and write it to the temporary file
                     return do_for_each(positions,
@@ -183,12 +195,8 @@ int main(int argc, char *argv[]) {
                         return sort_block(orig_file, tmp_file, pos, block_size);
 
                     // Merge all blocks from temporary file, writing them back to original file
-                    }).then([&orig_file, &tmp_file, &positions, block_size] {
-                        std::vector<uint64_t> positions_vec;
-                        std::for_each(positions.begin(), positions.end(), [&positions_vec] (uint64_t pos) {
-                            positions_vec.push_back(pos);
-                        });
-                        return merge_blocks(tmp_file, orig_file, std::move(positions_vec), block_size, block_size);
+                    }).then([&orig_file, &tmp_file, &positions, block_size] {                        
+                        return merge_blocks(tmp_file, orig_file, positions, block_size, block_size);
 
                     // flush files at the end
                     }).finally([&orig_file] {
