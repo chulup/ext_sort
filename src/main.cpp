@@ -173,6 +173,11 @@ int main(int argc, char *argv[]) {
             }
             const uint64_t max_buffer_size = get_max_buffer_size();
 
+#if TEST_MEMORY_LIMITS
+            return;
+#endif
+
+
             std::vector<temp_data_t> temp_files;
             parallel_for_each(boost::irange<uint64_t>(0, fsize, max_buffer_size), [&temp_files, &filename, max_buffer_size] (uint64_t position) {
                 return open_temp_file(filename).then([&temp_files, position, max_buffer_size] (auto temp_data) {
