@@ -159,12 +159,12 @@ int main(int argc, char *argv[]) {
 
         return async([filename] () {
             uint64_t fsize = file_size(filename).get0();
-            const auto stats = seastar::memory::stats();
 
             if (fsize % RECORD_SIZE != 0) {
                 throw std::runtime_error("File size is not a multiple of RECORD_SIZE");
             }
-            const uint64_t block_size = get_available_memory();
+            const uint64_t block_size = get_max_buffer_size();
+
             const sstring out_name = sprint("%s.sort_tmp", filename);
             const std::vector<uint64_t> positions = [fsize, block_size] () {
                 std::vector<uint64_t> temp;
