@@ -31,29 +31,29 @@ uint64_t get_max_buffer_size() {
         try {
             auto buf = temporary_buffer<char>::aligned(4096, current);
 #if TEST_MEMORY_LIMITS
-//            seastar::print("Allocated buffer of size %s\n", pp_number(buf.size()));
+            seastar::print("Allocated buffer of size %s\n", pp_number(buf.size()));
 #endif
         } catch (const std::bad_alloc &) {
 #if TEST_MEMORY_LIMITS
-//            seastar::print("Got bad_alloc on size %s\n", pp_number(current));
+            seastar::print("Got bad_alloc on size %s\n", pp_number(current));
 #endif
             break;
         }
         current += increment;
     }
 #if TEST_MEMORY_LIMITS
-//    seastar::print("Allocating buffers starting from size %s with decrement %s\n", pp_number(current), pp_number(decrement));
+    seastar::print("Allocating buffers starting from size %s with decrement %s\n", pp_number(current), pp_number(decrement));
 #endif
     while (true) {
         try {
             auto buf = temporary_buffer<char>::aligned(4096, current);
 #if TEST_MEMORY_LIMITS
-//            seastar::print("Allocated buffer of size %s\n", pp_number(buf.size()));
+            seastar::print("Allocated buffer of size %s\n", pp_number(buf.size()));
 #endif
             break;
         } catch (const std::bad_alloc &) {
 #if TEST_MEMORY_LIMITS
-//            seastar::print("Got bad_alloc on size %s\n", pp_number(current));
+            seastar::print("Got bad_alloc on size %s\n", pp_number(current));
 #endif
         }
         current -= decrement;

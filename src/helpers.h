@@ -5,7 +5,7 @@
 #include <string>
 #include <core/file.hh>
 
-#define TEST_MEMORY_LIMITS 0
+#define TEST_MEMORY_LIMITS 1
 
 uint64_t get_max_buffer_size();
 

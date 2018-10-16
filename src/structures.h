@@ -7,6 +7,8 @@
 #include <core/file.hh>
 
 const size_t RECORD_SIZE = 4096;
+const size_t MIN_BUFFER_SIZE = 100 * 1024 * 1024; // 100M
+const size_t MERGE_WAYS = 5;
 
 /// Helper structure which data could be casted to
 /// It represents individual data records to be sorted
@@ -40,5 +42,8 @@ typedef struct {
     uint64_t size;
     uint64_t orig_position;
 } temp_data_t;
+bool operator< (const temp_data_t &left, const temp_data_t &right) {
+    return left.size < right.size;
+}
 
 #endif // STRUCTURES_H
