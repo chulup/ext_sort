@@ -59,6 +59,7 @@ future<> write_minimum_record(std::vector<stream_with_record> &streams, output_s
             min_stream->stream.read_exactly(RECORD_SIZE).then(
                     [&streams, &min_stream] (tmp_buf buffer) mutable -> future<> {
                 if (min_stream->stream.eof()) {
+                    logs.info("Erasing stream\n");
                     streams.erase(min_stream);
                     return make_ready_future();
                 }
@@ -86,6 +87,7 @@ future<> merge_files(const Range &input_files, file out_file, size_t mem_availab
         sorted_streams.push_back(stream_with_record {
             make_file_input_stream(data_file.file, 0, data_file.size, file_input_stream_options{buffer_size})
         });
+        logs.info("Created stream for temp file of size {}", data_file.size);
         total_size += data_file.size;
     });
 
@@ -153,7 +155,7 @@ future<> merge_smallest_files(std::vector<temp_data_t> &in_files, size_t mem_ava
             // find MERGE_WAYS smallest files
             std::partial_sort(in_files.begin(), in_files.begin() + MERGE_WAYS, in_files.end());
 
-            auto new_temp_data = in_files.emplace_back(temp_data_t{new_file, 0u /*size*/, 0u /*position*/});
+            auto &new_temp_data = in_files.emplace_back(temp_data_t{new_file, 0u /*size*/, 0u /*position*/});
             auto range = boost::make_iterator_range(in_files.begin(), in_files.begin() + MERGE_WAYS);
             for (const auto &temp: range) {
                 new_temp_data.size += temp.size;
