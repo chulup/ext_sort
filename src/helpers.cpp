@@ -1,5 +1,6 @@
 #include "helpers.h"
 #include <utility>
+#include <filesystem>
 #include <fmt/format.h>
 #include <core/memory.hh>
 #include <core/reactor.hh>
@@ -83,15 +84,14 @@ std::string pp_number(uint64_t number) {
 }
 
 
-// TODO: open file with open_flags::exclusive
-// TODO: delete file after use
-future<std::pair<sstring, file>> open_temp_file(const sstring &orig_filename) {
-    static size_t counter = 0;
-
-    const sstring name = format("{}.tmp_{}", orig_filename, counter++);
-    return open_file_dma(name, open_flags::rw | open_flags::create | open_flags::truncate).then(
-            [name] (file result) -> future<std::pair<sstring, file>> {
-        return make_ready_future<std::pair<sstring, file>>(std::make_pair(name, result));
+future<file> open_temp_file(const sstring &path) {
+    std::filesystem::path fs_path{path};
+    if (fs_path.has_filename()) {
+        fs_path = fs_path.parent_path();
+    }
+    return open_file_dma(fs_path.c_str(), open_flags::rw | open_flags(O_TMPFILE)).then(
+            [] (auto result) {
+        return make_ready_future<file>(result);
     });
 }
 

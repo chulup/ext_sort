@@ -37,9 +37,8 @@ bool operator< (const stream_with_record &left, const stream_with_record &right)
 /// Container for temporary
 typedef struct {
     seastar::file file;
-    seastar::sstring filename;
     uint64_t size;
-    uint64_t position;
+    uint64_t orig_position;
 } temp_data_t;
 
 #endif // STRUCTURES_H

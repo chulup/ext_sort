@@ -22,7 +22,7 @@ using namespace seastar;
 /// Caller must ensure the output file will not have excess data at the end
 future<> sort_block(file &in_file, temp_data_t &temp_data) {
     auto buffer = tmp_buf::aligned(in_file.disk_read_dma_alignment(), temp_data.size);
-    return in_file.dma_read(temp_data.position, buffer.get_write(), temp_data.size).then(
+    return in_file.dma_read(temp_data.orig_position, buffer.get_write(), temp_data.size).then(
             [out_file = temp_data.file, buffer = buffer.share()] (const uint64_t read_bytes) mutable {
         if (read_bytes % RECORD_SIZE != 0) {
             // Something went wrong
@@ -150,13 +150,12 @@ int main(int argc, char *argv[]) {
             return;
 #endif
             std::vector<temp_data_t> temp_files;
-            parallel_for_each(boost::irange<uint64_t>(0, fsize, max_buffer_size), [&temp_files, &filename, max_buffer_size] (uint64_t position) {
-                return open_temp_file(filename).then([&temp_files, position, max_buffer_size] (auto temp_data) {
-                    sstring filename = temp_data.first;
-                    file temp_file = temp_data.second;
+            parallel_for_each(boost::irange<uint64_t>(0, fsize, max_buffer_size),
+                    [&temp_files, &filename, max_buffer_size] (uint64_t position) {
+                return open_temp_file(filename).then(
+                        [&temp_files, position, max_buffer_size] (auto temp_file) {
                     temp_files.push_back(temp_data_t{
                         temp_file,
-                        filename,
                         max_buffer_size,
                         position
                     });
@@ -179,17 +178,23 @@ int main(int argc, char *argv[]) {
 
                     // flush files at the end
                     })
-                    /*.then([&tmp_files] {
-                        return do_for_each(tmp_files, [] (auto tmp_file) {
-                            return tmp_file.file.close();
-                        });
-                    })*/
+//                    .then([&tmp_files] {
+//                      return do_for_each(tmp_files, [] (auto tmp_file) {
+//                            return tmp_file.file.close();
+//                        });
+//                    })
                     .then([&orig_file] {
                         return orig_file.flush();
                     })
                     /*.finally([&orig_file] {
                         return orig_file.close();
                     })*/
+                    .then([] {
+                        return seastar::sync_directory("/media/chulup/c3837106-b315-4c5e-bf26-2015ccb774d7/");
+                    })
+//                    .then([&orig_file] {
+//                        return orig_file.close();
+//                    })
                     ;
                 });
             }).get();
