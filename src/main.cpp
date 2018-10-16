@@ -75,7 +75,7 @@ future<> write_minimum_record(std::vector<stream_with_record> &streams, output_s
 // Write sorted data to `out_file`
 template<class Range>
 future<> merge_files(const Range &input_files, file out_file, size_t mem_available) {
-    auto buffer_size = mem_available / (input_files.size() + 2 /* twice the size for output buffer */);
+    auto buffer_size = mem_available / (input_files.size() + 4 /* twice the size for output buffer */);
      // make sure buffer size is a multiple of write_alignment
     buffer_size = (buffer_size / out_file.disk_write_dma_alignment()) * out_file.disk_write_dma_alignment();
 
@@ -87,12 +87,13 @@ future<> merge_files(const Range &input_files, file out_file, size_t mem_availab
         sorted_streams.push_back(stream_with_record {
             make_file_input_stream(data_file.file, 0, data_file.size, file_input_stream_options{buffer_size})
         });
-        logs.info("Created stream for temp file of size {}", data_file.size);
+        logs.info("Created stream for temp file of size {}", pp_number(data_file.size));
         total_size += data_file.size;
     });
 
     logs.info("Merging {} files with total size of {}; each input stream got {} buffer\n",
         sorted_streams.size(), pp_number(total_size), pp_number(buffer_size));
+    print_mem_stats();
 
     // give writing stream twice the memory of reading streams for less write operations
     // allow it to write its buffers in background
@@ -147,7 +148,7 @@ future<> merge_smallest_files(std::vector<temp_data_t> &in_files, size_t mem_ava
     return do_until(
             [&in_files, mem_available] {
         // Stop when temp file count is 9 or less, or buffer size for each temp file is more than MIN_BUFFER_SIZE
-        return in_files.size() <= MERGE_WAYS || (mem_available / in_files.size() + 2) > MIN_BUFFER_SIZE;
+        return (in_files.size() <= MERGE_WAYS) || ((mem_available / in_files.size() + 4) > MIN_BUFFER_SIZE);
     }, [&in_files, mem_available, &path] () mutable {
         // create new temporary file
         return open_temp_file(path)
@@ -238,21 +239,14 @@ int main(int argc, char *argv[]) {
                         return remove_n_first(tmp_files, tmp_files.size());
                     })
                     .then([&orig_file] {
+                        logs.info("Flushing original file");
                         return orig_file.flush();
                     })
                     .finally([&orig_file] {
+                        logs.info("Closing original file");
                         return orig_file.close();
                     })
-                    .then([] {
-                        return seastar::sync_directory("/media/chulup/c3837106-b315-4c5e-bf26-2015ccb774d7/");
-                    })
-                    .then([] {
-                        logs.info("=== 1 File was successfully sorted!");
-                    })
                     ;
-                })
-                .then([] {
-                    logs.info("=== 2 File was successfully sorted!");
                 })
                 ;
             }).get();

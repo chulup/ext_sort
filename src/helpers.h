@@ -13,4 +13,6 @@ std::string pp_number(uint64_t number);
 
 seastar::future<seastar::file> open_temp_file(const seastar::sstring &path);
 
+void print_mem_stats();
+
 #endif

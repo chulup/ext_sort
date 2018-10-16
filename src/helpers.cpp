@@ -9,14 +9,18 @@
 
 using namespace seastar;
 
-uint64_t get_max_buffer_size() {
-#if TEST_MEMORY_LIMITS
+void print_mem_stats() {
     const auto stats = memory::stats();
     const auto total_free = stats.free_memory();
-    const auto thread_count = smp::count;
-    seastar::print("free mem: %s, thread_count: %d\n", pp_number(total_free), thread_count);
-    seastar::print("memory per thread?? %s\n", pp_number(total_free / thread_count));
+    seastar::print("free mem: %s, thread_count: %u\n", pp_number(total_free), smp::count);
     seastar::print("allocated: %s\n", pp_number(stats.allocated_memory()));
+    seastar::print("mallocs: %llu; live objects: %llu\n", stats.mallocs(), stats.live_objects());
+}
+
+
+uint64_t get_max_buffer_size() {
+#if TEST_MEMORY_LIMITS
+    print_mem_stats();
 #endif
 
     const uint64_t increment = 512 * 1024 * 1024; // 512M
