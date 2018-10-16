@@ -1,6 +1,7 @@
 #include <iostream>
 #include <numeric>
 
+#include "structures.h"
 #include "helpers.h"
 
 #include <core/app-template.hh>
@@ -13,37 +14,9 @@
 
 using namespace seastar;
 
-const size_t RECORD_SIZE = 4096;
 
-// Helper structure which data could be casted to; allows us to use ::operator<() on raw blocks of known size
-struct record_t {
-    char data[RECORD_SIZE];
-};
 
-bool operator<(const record_t &left, const record_t &right) {
-    return std::memcmp(left.data, right.data, sizeof(record_t::data)) < 0;
-}
 
-typedef temporary_buffer<char> tmp_buf;
-
-typedef struct {
-    seastar::file file;
-    sstring filename;
-    uint64_t size;
-    uint64_t position;
-} temp_data_t;
-
-typedef struct {
-    input_stream<char> stream;
-    tmp_buf current_record = {};
-} stream_with_record;
-
-bool operator< (const stream_with_record &left, const stream_with_record &right) {
-    const record_t *left_r = reinterpret_cast<const record_t*>(left.current_record.get());
-    const record_t *right_r = reinterpret_cast<const record_t*>(right.current_record.get());
-
-    return *left_r < *right_r;
-};
 
 /// Sort block of in_file data, write to out_file from the start
 /// Caller must ensure the output file will not have excess data at the end
@@ -176,8 +149,6 @@ int main(int argc, char *argv[]) {
 #if TEST_MEMORY_LIMITS
             return;
 #endif
-
-
             std::vector<temp_data_t> temp_files;
             parallel_for_each(boost::irange<uint64_t>(0, fsize, max_buffer_size), [&temp_files, &filename, max_buffer_size] (uint64_t position) {
                 return open_temp_file(filename).then([&temp_files, position, max_buffer_size] (auto temp_data) {

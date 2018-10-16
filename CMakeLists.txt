@@ -12,6 +12,7 @@ find_package(Seastar REQUIRED)
 
 set(SOURCES
     src/main.cpp
+    src/structures.h
     src/helpers.h
     src/helpers.cpp
 )
