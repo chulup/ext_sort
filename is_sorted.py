@@ -31,7 +31,7 @@ if len(sys.argv) >= 3:
         cont = True
 
 def prettify_hex(data, count):
-    return " ".join(["{:X}".format(data[i]) for i in range(count)])
+    return " ".join(["{:02X}".format(data[i]) for i in range(count)])
 
 full_hash = sha256()
 full_dict = dict()
