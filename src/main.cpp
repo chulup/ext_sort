@@ -59,7 +59,7 @@ future<> write_minimum_record(std::vector<stream_with_record> &streams, output_s
             min_stream->stream.read_exactly(RECORD_SIZE).then(
                     [&streams, &min_stream] (tmp_buf buffer) mutable -> future<> {
                 if (min_stream->stream.eof()) {
-                    logs.info("Erasing stream\n");
+                    logs.info("Erasing stream");
                     streams.erase(min_stream);
                     return make_ready_future();
                 }
@@ -91,9 +91,9 @@ future<> merge_files(const Range &input_files, file out_file, size_t mem_availab
         total_size += data_file.size;
     });
 
-    logs.info("Merging {} files with total size of {}; each input stream got {} buffer\n",
+    logs.info("Merging {} files with total size of {}; each input stream got {} buffer",
         sorted_streams.size(), pp_number(total_size), pp_number(buffer_size));
-    print_mem_stats();
+//    print_mem_stats();
 
     // give writing stream twice the memory of reading streams for less write operations
     // allow it to write its buffers in background
