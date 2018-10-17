@@ -124,7 +124,7 @@ future<> merge_files(const Range &input_files, file out_file, size_t mem_availab
                     return write_minimum_record(sorted_streams, out_stream);
                 }
             ).then([&out_stream] {
-                out_stream.flush();
+                return out_stream.flush();
             });
         });
     });
@@ -147,7 +147,7 @@ future<> remove_n_first(std::vector<temp_data_t> &in_files, size_t count) {
 future<> merge_smallest_files(std::vector<temp_data_t> &in_files, size_t mem_available, sstring &path) {
     return do_until(
             [&in_files, mem_available] {
-        // Stop when temp file count is 9 or less, or buffer size for each temp file is more than MIN_BUFFER_SIZE
+        // Stop when temp file count is MERGE_WAYS or less, or buffer size for each temp file is more than MIN_BUFFER_SIZE
         return (in_files.size() <= MERGE_WAYS) || ((mem_available / in_files.size() + 4) > MIN_BUFFER_SIZE);
     }, [&in_files, mem_available, &path] () mutable {
         // create new temporary file
@@ -233,8 +233,8 @@ int main(int argc, char *argv[]) {
                         auto range = boost::make_iterator_range(tmp_files.begin(), tmp_files.end());
                         return merge_files(range, orig_file, max_buffer_size);
 
-                    // close temp files
                     })
+                    // close temp files
                     .then([&tmp_files] {
                         return remove_n_first(tmp_files, tmp_files.size());
                     })
