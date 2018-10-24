@@ -24,13 +24,33 @@ target_link_libraries(ext_sort
     Boost::system
 )
 
-
-
 target_compile_options(ext_sort
     PRIVATE
         -Wall
         -Werror
-        -Wno-unused-variable
+        -Wunused-variable
+        -Wunused-result
+        -DDEBUG
+        -g
+    )
+
+set(MEM_TEST_SOURCES
+    src/memory_test.cpp
+)
+add_executable(mem_test ${MEM_TEST_SOURCES})
+
+set_property(TARGET mem_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(mem_test
+    Seastar::Seastar
+    Boost::system
+)
+
+target_compile_options(mem_test
+    PRIVATE
+        -Wall
+        -Werror
+        -Wunused-variable
+        -Wunused-result
         -DDEBUG
         -g
     )
